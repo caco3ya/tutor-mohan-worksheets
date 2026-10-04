@@ -48,7 +48,7 @@ select,input[type=text],input[type=number]{width:100%;padding:10px 12px;border:1
 .ln{height:7mm;border-bottom:1px dotted #a1a1aa}.tag{font-size:8px;color:#a1a1aa;margin-top:3px}
 .q>div{flex:1;min-width:0}.ak{font-size:11px;padding:1.6mm 0}
 @media print{@page{size:A4;margin:0}body{background:#fff}.no-print{display:none!important}.pages{zoom:1!important}
-.sheet{margin:0;border:0;box-shadow:0}body[data-print=ws] #keyPages,body[data-print=key] #wsPages{display:none}}
+.sheet{margin:0;border:0;box-shadow:none}body[data-print=ws] #keyPages,body[data-print=key] #wsPages{display:none}}
 </style></head><body>
 <header class="no-print"><span class="serif">Tutor Mohan <span style="font-size:12px;color:#71717a;font-family:Poppins">in collaboration with Mr Worksheet</span></span><span class="chip" id="src">Loading…</span></header>
 <main>
@@ -105,17 +105,29 @@ const DEMO=[
 ];
 const DN={E:"Easy",M:"Moderate",D:"Difficult"},$=s=>document.querySelector(s),esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const S={rows:[],ch:new Set,tp:new Set,pool:{E:[],M:[],D:[]},cache:{}};
-const norm=d=>/^e/i.test(d)?"E":/^(d|h)/i.test(d)?"D":"M";
+
+// Difficulty normaliser: Easy/E/1 -> E ; Difficult/Hard/D/H/3 -> D ; everything else (Moderate/Medium/...) -> M
+const norm=d=>{d=String(d==null?"":d).trim().toLowerCase();
+ if(/^(e|1|l)/.test(d))return"E";            // easy, e, 1, low, level 1
+ if(/^(d|h|3)/.test(d))return"D";            // difficult, hard, d, h, 3
+ return"M"};
 const shuf=a=>{a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a};
 function demoQs(r){return r[4].map(s=>{const[d,t,a,o]=s.split("|");return{d:norm(d),text:t,ans:a,opts:o?o.split("~"):null,topic:r[3]}})}
-function gviz(txt){const j=JSON.parse(txt.slice(txt.indexOf("{"),txt.lastIndexOf("}")+1));if(!j.table)throw 0;
- return{cols:j.table.cols.map(c=>(c.label||c.id||"").trim()),rows:j.table.rows.map(r=>r.c.map(c=>c?(c.v??c.f??""):""))}}
+
+// Parse Google Visualization JSON. If Google fails to detect the header row
+// (all-text sheets), the labels come back empty -> use the first data row as header.
+function gviz(txt){
+ const j=JSON.parse(txt.slice(txt.indexOf("{"),txt.lastIndexOf("}")+1));if(!j.table)throw 0;
+ let cols=j.table.cols.map(c=>(c.label||"").trim());
+ let rows=j.table.rows.map(r=>(r.c||[]).map(c=>c?(c.v??c.f??""):""));
+ if(cols.every(c=>!c)&&rows.length){cols=rows[0].map(v=>String(v).trim());rows=rows.slice(1)}
+ return{cols,rows}}
 const gi=(cols,names)=>{for(const n of names){const i=cols.findIndex(c=>c.toLowerCase().replace(/\s+/g,"").includes(n));if(i>-1)return i}return -1};
 async function loadIndex(){
- try{const u=`https://docs.google.com/spreadsheets/d/${CFG.indexSheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(CFG.indexSheetTab)}`;
+ try{const u=`https://docs.google.com/spreadsheets/d/${CFG.indexSheetId}/gviz/tq?tqx=out:json&headers=1&sheet=${encodeURIComponent(CFG.indexSheetTab)}`;
   const r=await fetch(u);if(!r.ok)throw 0;const{cols,rows}=gviz(await r.text());
   const ix=[["subject"],["grade","class"],["chapter","unit"],["topic","lesson"],["fileid","id"]].map((n,k)=>{const i=gi(cols,n);return i<0?k:i});
-  S.rows=rows.map(r=>({subject:String(r[ix[0]]).trim(),grade:String(r[ix[1]]).trim(),chapter:String(r[ix[2]]).trim(),topic:String(r[ix[3]]).trim(),id:String(r[ix[4]]).trim()})).filter(r=>r.subject&&r.topic&&r.id);
+  S.rows=rows.map(r=>({subject:String(r[ix[0]]??"").trim(),grade:String(r[ix[1]]??"").trim(),chapter:String(r[ix[2]]??"").trim(),topic:String(r[ix[3]]??"").trim(),id:String(r[ix[4]]??"").trim()})).filter(r=>r.subject&&r.topic&&r.id);
   if(!S.rows.length)throw 0;$("#src").textContent="Live Drive index ✓"}
  catch{S.rows=DEMO.map((r,i)=>({subject:r[0],grade:r[1],chapter:r[2],topic:r[3],id:"demo"+i,demo:r}));$("#src").textContent="Demo question bank"}
  S.rows.forEach((r,i)=>r.k=i);
@@ -123,18 +135,20 @@ async function loadIndex(){
 async function loadQs(r){
  if(S.cache[r.id])return S.cache[r.id];let qs;
  if(r.demo)qs=demoQs(r.demo);
- else try{const x=await fetch(`https://docs.google.com/spreadsheets/d/${r.id}/gviz/tq?tqx=out:json`);const{cols,rows}=gviz(await x.text());
-  const I={d:gi(cols,["difficulty"]),t:gi(cols,["questiontext","question"]),a:gi(cols,["answer"]),sp:gi(cols,["answerspace","space","lines"]),o:["optiona","optionb","optionc","optiond"].map(n=>gi(cols,[n]))};
-  qs=rows.map(c=>{const text=String(c[I.t<0?4:I.t]||"").trim();if(!text)return null;
-   let opts=I.o.every(i=>i>-1)?I.o.map(i=>String(c[i]||"").trim()).filter(Boolean):null;if(opts&&opts.length<2)opts=null;
-   return{d:norm(String(c[I.d]||"M")),text,ans:I.a>-1&&c[I.a]!==""?String(c[I.a]):"",opts,lines:I.sp>-1?parseInt(c[I.sp])||0:0,topic:r.topic}}).filter(Boolean)}
+ else try{const x=await fetch(`https://docs.google.com/spreadsheets/d/${r.id}/gviz/tq?tqx=out:json&headers=1`);const{cols,rows}=gviz(await x.text());
+  const I={d:gi(cols,["difficulty","level"]),t:gi(cols,["questiontext","question"]),a:gi(cols,["answer"]),sp:gi(cols,["answerspace","space","lines"]),o:["optiona","optionb","optionc","optiond"].map(n=>gi(cols,[n]))};
+  // 'answer' must not match 'answerspace'
+  if(I.a>-1&&I.a===I.sp){const j=cols.findIndex((c,i)=>/^answer$/i.test(c.trim())&&i!==I.sp);I.a=j}
+  qs=rows.map(c=>{const text=String(c[I.t<0?4:I.t]??"").trim();if(!text)return null;
+   let opts=I.o.every(i=>i>-1)?I.o.map(i=>String(c[i]??"").trim()).filter(Boolean):null;if(opts&&opts.length<2)opts=null;
+   return{d:norm(c[I.d<0?2:I.d]),text,ans:I.a>-1&&c[I.a]!==""&&c[I.a]!=null?String(c[I.a]):"",opts,lines:I.sp>-1?parseInt(c[I.sp])||0:0,topic:r.topic}}).filter(Boolean)}
  catch{qs=[];S.err=(S.err||0)+1}
  return S.cache[r.id]=qs;
 }
 const sel=(el,vals,ph)=>{el.innerHTML=`<option value="">${ph}</option>`+vals.map(v=>`<option>${esc(v)}</option>`).join("")};
 const uniq=a=>[...new Set(a)];
 function fillSubj(){sel($("#subj"),uniq(S.rows.map(r=>r.subject)).sort(),"Select subject");fillGrade()}
-function fillGrade(){const s=$("#subj").value;sel($("#grade"),uniq(S.rows.filter(r=>r.subject===s).map(r=>r.grade)).sort((a,b)=>a.localeCompare(b,0,{numeric:true})),s?"Select grade":"Select subject first");fillCh()}
+function fillGrade(){const s=$("#subj").value;sel($("#grade"),uniq(S.rows.filter(r=>r.subject===s).map(r=>r.grade)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),s?"Select grade":"Select subject first");fillCh()}
 const scope=()=>S.rows.filter(r=>r.subject===$("#subj").value&&r.grade===$("#grade").value);
 function chips(box,items,set,cb,grouped){box.innerHTML=items.map(([v,l,g])=>(g?`<div class="grp">${esc(g)}</div>`:"")+`<label><input type="checkbox" value="${esc(v)}" ${set.has(v)?"checked":""}><span>${esc(l)}</span></label>`).join("");
  box.querySelectorAll("input").forEach(i=>i.onchange=()=>{i.checked?set.add(i.value):set.delete(i.value);cb()})}
