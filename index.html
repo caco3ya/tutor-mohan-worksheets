@@ -67,6 +67,8 @@ select,input[type=text],input[type=number]{width:100%;padding:10px 12px;border:1
    <div class="cnt m"><b>Moderate</b><input type="number" id="nm" min="0" value="4"><small id="aM"></small></div>
    <div class="cnt d"><b>Difficult</b><input type="number" id="nd" min="0" value="2"><small id="aD"></small></div>
   </div>
+  <div id="tabnote" class="status warn" hidden></div>
+  <div id="avail" style="margin-top:10px;font-size:11.5px;color:#52525b;line-height:1.7"></div>
   <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap"><span style="font-size:12px;color:#71717a;align-self:center">Auto-split:</span>
    <button class="mini" data-p="40,40,20">Balanced 40/40/20</button><button class="mini" data-p="60,30,10">Easy-heavy</button><button class="mini" data-p="20,40,40">Challenge</button><button class="mini" data-p="34,33,33">Equal</button></div>
   <div class="status" id="st"></div>
@@ -91,7 +93,7 @@ select,input[type=text],input[type=number]{width:100%;padding:10px 12px;border:1
 </div>
 </main>
 <script>
-const CFG={indexSheetId:"1VxeTKAyHeIDlrjwbVJaOyZWkIj_G8BMTxohr-Rw0VnQ",indexSheetTab:"DriveIndex",branding:"Tutor Mohan in collaboration with Mr Worksheet"};
+const CFG={apiKey:"", /* paste your Google Sheets API key here to read ALL tabs */ indexSheetId:"1VxeTKAyHeIDlrjwbVJaOyZWkIj_G8BMTxohr-Rw0VnQ",indexSheetTab:"DriveIndex",branding:"Tutor Mohan in collaboration with Mr Worksheet"};
 // Demo bank (used if the live Google Sheet index is unreachable). Format: "E|M|D | question | answer | opt1~opt2~opt3~opt4"
 const DEMO=[
 ["Mathematics","Grade 4","Place Values","Rounding up",["E|Round 47 to the nearest 10.|50","E|Round 63 to the nearest 10.|60|60~70~63~65","M|Round 328 to the nearest 100.|300","M|Round 5,673 to the nearest 1000.|6000","D|A shop has 186 apples and 214 oranges. Estimate the total by rounding each to the nearest 10.|190 + 210 = 400","D|What is the greatest 3-digit number that rounds to 500 when rounded to the nearest 100?|549"]],
@@ -126,25 +128,42 @@ const gi=(cols,names)=>{for(const n of names){const i=cols.findIndex(c=>c.toLowe
 async function loadIndex(){
  try{const u=`https://docs.google.com/spreadsheets/d/${CFG.indexSheetId}/gviz/tq?tqx=out:json&headers=1&sheet=${encodeURIComponent(CFG.indexSheetTab)}`;
   const r=await fetch(u);if(!r.ok)throw 0;const{cols,rows}=gviz(await r.text());
-  const ix=[["subject"],["grade","class"],["chapter","unit"],["topic","lesson"],["fileid","id"]].map((n,k)=>{const i=gi(cols,n);return i<0?k:i});
+  const ti=gi(cols,["tabs","sheetnames"]);const ix=[["subject"],["grade","class"],["chapter","unit"],["topic","lesson"],["fileid","id"]].map((n,k)=>{const i=gi(cols,n);return i<0?k:i});
   S.rows=rows.map(r=>({subject:String(r[ix[0]]??"").trim(),grade:String(r[ix[1]]??"").trim(),chapter:String(r[ix[2]]??"").trim(),topic:String(r[ix[3]]??"").trim(),id:String(r[ix[4]]??"").trim()})).filter(r=>r.subject&&r.topic&&r.id);
   if(!S.rows.length)throw 0;$("#src").textContent="Live Drive index ✓"}
  catch{S.rows=DEMO.map((r,i)=>({subject:r[0],grade:r[1],chapter:r[2],topic:r[3],id:"demo"+i,demo:r}));$("#src").textContent="Demo question bank"}
  S.rows.forEach((r,i)=>r.k=i);
 }
+const SJS="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+const loadScript=u=>new Promise((res,rej)=>{if(window.XLSX)return res();const e=document.createElement("script");e.src=u;e.onload=res;e.onerror=rej;document.head.appendChild(e)});
+// A tab named Easy / Moderate / Medium / Difficult / Hard sets the difficulty when the tab has no Difficulty column (or the cell is blank)
+const tabDiff=n=>{n=String(n||"").toLowerCase();return/easy/.test(n)?"E":/(difficult|hard)/.test(n)?"D":/(moderate|medium)/.test(n)?"M":null};
+function parseTab(cols,rows,tab,topic){
+ const I={d:gi(cols,["difficulty","level"]),t:gi(cols,["questiontext","question"]),a:gi(cols,["answer"]),sp:gi(cols,["answerspace","space","lines"]),o:["optiona","optionb","optionc","optiond"].map(n=>gi(cols,[n]))};
+ if(I.a>-1&&I.a===I.sp)I.a=cols.findIndex((c,i)=>/^answer$/i.test(c.trim())&&i!==I.sp);
+ const td=tabDiff(tab);
+ return rows.map(c=>{const text=String(c[I.t<0?4:I.t]??"").trim();if(!text)return null;
+  let opts=I.o.every(i=>i>-1)?I.o.map(i=>String(c[i]??"").trim()).filter(Boolean):null;if(opts&&opts.length<2)opts=null;
+  const raw=c[I.d<0?2:I.d];const d=td&&(I.d<0||!String(raw??"").trim())?td:norm(raw);
+  return{d,text,ans:I.a>-1&&c[I.a]!==""&&c[I.a]!=null?String(c[I.a]):"",opts,lines:I.sp>-1?parseInt(c[I.sp])||0:0,topic,tab}}).filter(Boolean)}
+async function listTabs(r){
+ if(CFG.apiKey){try{const j=await(await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${r.id}?fields=sheets.properties(title,sheetId,hidden)&key=${CFG.apiKey}`)).json();
+  if(j.sheets)return j.sheets.filter(x=>!x.properties.hidden).map(x=>({name:x.properties.title,gid:x.properties.sheetId}))}catch{}}
+ if(r.tabs&&r.tabs.length)return r.tabs.map(n=>({name:n}));
+ return null}
 async function loadQs(r){
- if(S.cache[r.id])return S.cache[r.id];let qs;
- if(r.demo)qs=demoQs(r.demo);
- else try{const x=await fetch(`https://docs.google.com/spreadsheets/d/${r.id}/gviz/tq?tqx=out:json&headers=1`);const{cols,rows}=gviz(await x.text());
-  const I={d:gi(cols,["difficulty","level"]),t:gi(cols,["questiontext","question"]),a:gi(cols,["answer"]),sp:gi(cols,["answerspace","space","lines"]),o:["optiona","optionb","optionc","optiond"].map(n=>gi(cols,[n]))};
-  // 'answer' must not match 'answerspace'
-  if(I.a>-1&&I.a===I.sp){const j=cols.findIndex((c,i)=>/^answer$/i.test(c.trim())&&i!==I.sp);I.a=j}
-  qs=rows.map(c=>{const text=String(c[I.t<0?4:I.t]??"").trim();if(!text)return null;
-   let opts=I.o.every(i=>i>-1)?I.o.map(i=>String(c[i]??"").trim()).filter(Boolean):null;if(opts&&opts.length<2)opts=null;
-   return{d:norm(c[I.d<0?2:I.d]),text,ans:I.a>-1&&c[I.a]!==""&&c[I.a]!=null?String(c[I.a]):"",opts,lines:I.sp>-1?parseInt(c[I.sp])||0:0,topic:r.topic}}).filter(Boolean)}
- catch{qs=[];S.err=(S.err||0)+1}
- return S.cache[r.id]=qs;
-}
+ if(S.cache[r.id])return S.cache[r.id];let qs=[],tabs=[],mode="all";
+ if(r.demo){qs=demoQs(r.demo);qs.forEach(q=>q.tab="Demo");tabs=["Demo"]}
+ else{
+  const base=`https://docs.google.com/spreadsheets/d/${r.id}/gviz/tq?tqx=out:json&headers=1`;let got=false;
+  const L=await listTabs(r);
+  if(L){const res=await Promise.all(L.map(async t=>{try{const x=await fetch(base+(t.gid!=null?`&gid=${t.gid}`:`&sheet=${encodeURIComponent(t.name)}`));const{cols,rows}=gviz(await x.text());return{t:t.name,q:parseTab(cols,rows,t.name,r.topic)}}catch{return null}}));
+   res.filter(Boolean).forEach(o=>{tabs.push(o.t);qs.push(...o.q)});got=tabs.length>0}
+  if(!got){try{await loadScript(SJS);const buf=await(await fetch(`https://docs.google.com/spreadsheets/d/${r.id}/export?format=xlsx`)).arrayBuffer();const wb=XLSX.read(buf,{type:"array"});
+   wb.SheetNames.forEach(n=>{const a=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,defval:""});if(!a.length)return;tabs.push(n);qs.push(...parseTab(a[0].map(v=>String(v).trim()),a.slice(1),n,r.topic))});got=tabs.length>0}catch{}}
+  if(!got){try{const x=await fetch(base);const{cols,rows}=gviz(await x.text());qs=parseTab(cols,rows,"First tab",r.topic);tabs=["First tab"];mode="first";got=true}catch{S.err=(S.err||0)+1}}
+ }
+ return S.cache[r.id]={qs,tabs,mode,topic:r.topic}}
 const sel=(el,vals,ph)=>{el.innerHTML=`<option value="">${ph}</option>`+vals.map(v=>`<option>${esc(v)}</option>`).join("")};
 const uniq=a=>[...new Set(a)];
 function fillSubj(){sel($("#subj"),uniq(S.rows.map(r=>r.subject)).sort(),"Select subject");fillGrade()}
@@ -164,9 +183,15 @@ function fillTp(){for(const k of [...S.tp])if(!S.ch.has(S.rows[k].chapter))S.tp.
 async function refreshPool(){
  $("#step4").hidden=!S.tp.size;S.pool={E:[],M:[],D:[]};if(!S.tp.size)return;
  const all=await Promise.all([...S.tp].map(k=>loadQs(S.rows[k])));const seen=new Set;
- all.flat().forEach(q=>{const key=q.text.toLowerCase();if(!seen.has(key)){seen.add(key);S.pool[q.d].push(q)}});
+ renderAvail(all);
+ all.flatMap(o=>o.qs).forEach(q=>{const key=q.text.toLowerCase();if(!seen.has(key)){seen.add(key);S.pool[q.d].push(q)}});
  const p=S.pool;$("#aE").textContent=p.E.length+" available";$("#aM").textContent=p.M.length+" available";$("#aD").textContent=p.D.length+" available";
  $("#aT").textContent=(p.E.length+p.M.length+p.D.length)+" available";check()}
+function renderAvail(all){
+ $("#avail").innerHTML=all.map(o=>{const c={E:0,M:0,D:0};o.qs.forEach(q=>c[q.d]++);
+  return `<div><b>${esc(o.topic)}</b>: <span style="color:#15803d">Easy ${c.E}</span> · <span style="color:#b45309">Moderate ${c.M}</span> · <span style="color:#b91c1c">Difficult ${c.D}</span> <span style="color:#a1a1aa">— ${o.tabs.length} tab${o.tabs.length==1?"":"s"}: ${esc(o.tabs.join(", ")||"none")}</span></div>`}).join("");
+ const one=all.filter(o=>o.mode==="first").map(o=>o.topic),tn=$("#tabnote");
+ tn.hidden=!one.length;tn.textContent=one.length?"Only the first tab could be read for: "+one.join(", ")+". Add a Google Sheets API key in CFG.apiKey (or a Tabs column in the index) so every tab is read.":""}
 const num=id=>Math.max(0,parseInt($(id).value)||0);
 function check(){const t=num("#tot"),a=num("#ne")+num("#nm")+num("#nd"),st=$("#st"),p=S.pool,av=p.E.length+p.M.length+p.D.length;let m,c="ok",ok=true;
  if(!t){m="Enter total questions (at least 1).";c="bad";ok=false}
